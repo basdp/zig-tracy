@@ -9,6 +9,6 @@
         "src",
     },
     .dependencies = .{
-        .tracy = .{ .path = ".." },
+        .tracy = .{ .path = "../.." },
     },
 }

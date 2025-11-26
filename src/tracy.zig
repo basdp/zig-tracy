@@ -130,10 +130,12 @@ const ZoneContext = if (options.tracy_enable) extern struct {
     pub inline fn value(_: *const ZoneContext, _: u64) void {}
 };
 
-pub inline fn initZone(comptime src: std.builtin.SourceLocation, comptime opts: ZoneOptions) ZoneContext {
-    if (!options.tracy_enable) return .{};
-    const active: c_int = @intFromBool(opts.active);
+pub const SrcLocOptions = struct {
+    name: ?[]const u8 = null,
+    color: ?u32 = null,
+};
 
+inline fn getSrcLoc(comptime src: std.builtin.SourceLocation, comptime opts: SrcLocOptions) type {
     const static = struct {
         var src_loc = c.___tracy_source_location_data{
             .name = if (opts.name) |name| name.ptr else null,
@@ -146,6 +148,18 @@ pub inline fn initZone(comptime src: std.builtin.SourceLocation, comptime opts: 
 
     // src.line magically is not comptime https://github.com/ziglang/zig/pull/12016#issuecomment-1178092847
     static.src_loc.line = src.line;
+
+    return static;
+}
+
+pub inline fn initZone(comptime src: std.builtin.SourceLocation, comptime opts: ZoneOptions) ZoneContext {
+    if (!options.tracy_enable) return .{};
+    const active: c_int = @intFromBool(opts.active);
+
+    const static = getSrcLoc(src, .{
+        .name = opts.name,
+        .color = opts.color,
+    });
 
     if (!options.tracy_no_callstack) {
         if (options.tracy_callstack) |depth| {
@@ -372,5 +386,91 @@ pub const TracingAllocator = struct {
         }
 
         self.parent_allocator.rawFree(buf, buf_align, ret_addr);
+    }
+};
+
+const TracingMutexImpl = struct {
+    mutex: std.Thread.Mutex,
+    tracy_lock_ctx: c.TracyCLockCtx,
+
+    pub const TracingMutexOptions = struct {
+        name: ?[]const u8 = null,
+        color: ?u32 = null,
+    };
+
+    pub fn init(comptime src: std.builtin.SourceLocation, comptime opts: TracingMutexOptions) TracingMutexImpl {
+        const static = getSrcLoc(src, .{
+            .name = opts.name,
+            .color = opts.color,
+        });
+
+        const m: TracingMutexImpl = .{
+            .mutex = .{},
+            .tracy_lock_ctx = c.___tracy_announce_lockable_ctx(&static.src_loc),
+        };
+
+        if (opts.name) |name| {
+            c.___tracy_custom_name_lockable_ctx(m.tracy_lock_ctx, name.ptr, name.len);
+        }
+
+        return m;
+    }
+
+    pub fn deinit(self: *TracingMutex) void {
+        c.___tracy_terminate_lockable_ctx(self.tracy_lock_ctx);
+    }
+
+    pub fn lock(self: *TracingMutex, comptime src: std.builtin.SourceLocation) void {
+        _ = c.___tracy_before_lock_lockable_ctx(self.tracy_lock_ctx);
+        self.mutex.lock();
+        c.___tracy_after_lock_lockable_ctx(self.tracy_lock_ctx);
+
+        const static = getSrcLoc(src, .{});
+        c.___tracy_mark_lockable_ctx(self.tracy_lock_ctx, &static.src_loc);
+    }
+
+    pub fn tryLock(self: *TracingMutex, comptime src: std.builtin.SourceLocation) bool {
+        _ = c.___tracy_before_lock_lockable_ctx(self.tracy_lock_ctx);
+        const result = self.mutex.tryLock();
+        c.___tracy_after_try_lock_lockable_ctx(self.tracy_lock_ctx, if (result) 1 else 0);
+
+        const static = getSrcLoc(src, .{});
+        c.___tracy_mark_lockable_ctx(self.tracy_lock_ctx, &static.src_loc);
+
+        return result;
+    }
+
+    pub fn unlock(self: *TracingMutex) void {
+        self.mutex.unlock();
+        c.___tracy_after_unlock_lockable_ctx(self.tracy_lock_ctx);
+    }
+};
+
+pub const TracingMutex = if (options.tracy_enable) TracingMutexImpl else struct {
+    mutex: std.Thread.Mutex,
+
+    pub inline fn init(comptime src: std.builtin.SourceLocation, comptime opts: TracingMutexImpl.TracingMutexOptions) TracingMutex {
+        _ = src;
+        _ = opts;
+
+        return .{
+            .mutex = .{},
+        };
+    }
+
+    pub inline fn deinit(_: *TracingMutex) void {}
+
+    pub inline fn lock(self: *TracingMutex, comptime src: std.builtin.SourceLocation) void {
+        _ = src;
+        self.mutex.lock();
+    }
+
+    pub inline fn tryLock(self: *TracingMutex, comptime src: std.builtin.SourceLocation) bool {
+        _ = src;
+        return self.mutex.tryLock();
+    }
+
+    pub inline fn unlock(self: *TracingMutex) void {
+        self.mutex.unlock();
     }
 };

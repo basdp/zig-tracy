@@ -1,0 +1,14 @@
+.{
+    .name = .zig_tracy_mutex_example,
+    .fingerprint = 0xd6986380c2c18822,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.14.1",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+    .dependencies = .{
+        .tracy = .{ .path = "../.." },
+    },
+}
