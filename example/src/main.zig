@@ -1,5 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const tracy = @import("tracy");
+const windows = std.os.windows;
 
 var finalise_threads: std.Thread.ResetEvent = .{};
 
@@ -7,15 +9,24 @@ fn handleSigInt(_: c_int) callconv(.C) void {
     finalise_threads.set();
 }
 
+fn handleCtrlEvent(_: windows.DWORD) callconv(windows.WINAPI) windows.BOOL {
+    finalise_threads.set();
+    return windows.TRUE;
+}
+
 pub fn main() !void {
     tracy.setThreadName("Main");
     defer tracy.message("Graceful main thread exit");
 
-    std.posix.sigaction(std.posix.SIG.INT, &.{
-        .handler = .{ .handler = handleSigInt },
-        .mask = std.posix.empty_sigset,
-        .flags = 0,
-    }, null);
+    if (builtin.os.tag == .windows) {
+        _ = windows.kernel32.SetConsoleCtrlHandler(handleCtrlEvent, windows.TRUE);
+    } else {
+        std.posix.sigaction(std.posix.SIG.INT, &.{
+            .handler = .{ .handler = handleSigInt },
+            .mask = std.posix.empty_sigset,
+            .flags = 0,
+        }, null);
+    }
 
     const other_thread = try std.Thread.spawn(.{}, otherThread, .{});
     defer other_thread.join();
