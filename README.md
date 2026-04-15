@@ -20,7 +20,7 @@ Easy to use bindings for the tracy client C API.
 
 ## Usage
 
-See `./example` for how to set up `zig-tracy` with a Zig project.
+See `./examples/*` for how to set up `zig-tracy` with a Zig project.
 
 In summary:
 * Declare `zig-tracy` as a dependency in the `build.zig.zon`
