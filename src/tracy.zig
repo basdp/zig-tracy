@@ -1,35 +1,8 @@
 const std = @import("std");
-const digits2 = std.fmt.digits2;
-const builtin = @import("builtin");
 
 const options = @import("tracy-options");
-
-const c = @cImport({
-    if (options.tracy_enable) @cDefine("TRACY_ENABLE", {});
-    if (options.tracy_on_demand) @cDefine("TRACY_ON_DEMAND", {});
-    if (options.tracy_callstack) |depth| @cDefine("TRACY_CALLSTACK", "\"" ++ digits2(depth) ++ "\"");
-    if (options.tracy_no_callstack) @cDefine("TRACY_NO_CALLSTACK", {});
-    if (options.tracy_no_callstack_inlines) @cDefine("TRACY_NO_CALLSTACK_INLINES", {});
-    if (options.tracy_only_localhost) @cDefine("TRACY_ONLY_LOCALHOST", {});
-    if (options.tracy_no_broadcast) @cDefine("TRACY_NO_BROADCAST", {});
-    if (options.tracy_only_ipv4) @cDefine("TRACY_ONLY_IPV4", {});
-    if (options.tracy_no_code_transfer) @cDefine("TRACY_NO_CODE_TRANSFER", {});
-    if (options.tracy_no_context_switch) @cDefine("TRACY_NO_CONTEXT_SWITCH", {});
-    if (options.tracy_no_exit) @cDefine("TRACY_NO_EXIT", {});
-    if (options.tracy_no_sampling) @cDefine("TRACY_NO_SAMPLING", {});
-    if (options.tracy_no_verify) @cDefine("TRACY_NO_VERIFY", {});
-    if (options.tracy_no_vsync_capture) @cDefine("TRACY_NO_VSYNC_CAPTURE", {});
-    if (options.tracy_no_frame_image) @cDefine("TRACY_NO_FRAME_IMAGE", {});
-    if (options.tracy_no_system_tracing) @cDefine("TRACY_NO_SYSTEM_TRACING", {});
-    if (options.tracy_delayed_init) @cDefine("TRACY_DELAYED_INIT", {});
-    if (options.tracy_manual_lifetime) @cDefine("TRACY_MANUAL_LIFETIME", {});
-    if (options.tracy_fibers) @cDefine("TRACY_FIBERS", {});
-    if (options.tracy_no_crash_handler) @cDefine("TRACY_NO_CRASH_HANDLER", {});
-    if (options.tracy_timer_fallback) @cDefine("TRACY_TIMER_FALLBACK", {});
-    if (options.shared and builtin.os.tag == .windows) @cDefine("TRACY_IMPORTS", {});
-
-    @cInclude("tracy/TracyC.h");
-});
+const c = @import("tracy-c");
+const tracy_io = std.Options.debug_io;
 
 pub inline fn setThreadName(comptime name: [:0]const u8) void {
     if (!options.tracy_enable) return;
@@ -241,10 +214,9 @@ pub inline fn print(comptime fmt: []const u8, args: anytype) void {
     if (!options.tracy_enable) return;
     const depth = options.tracy_callstack orelse 0;
 
-    var stream = std.io.fixedBufferStream(&tracy_message_buffer);
-    stream.writer().print(fmt, args) catch {};
-
-    const written = stream.getWritten();
+    var writer: std.Io.Writer = .fixed(&tracy_message_buffer);
+    writer.print(fmt, args) catch {};
+    const written = writer.buffered();
     c.___tracy_emit_message(written.ptr, written.len, depth);
 }
 
@@ -252,21 +224,18 @@ pub inline fn printColor(comptime fmt: []const u8, args: anytype, color: u32) vo
     if (!options.tracy_enable) return;
     const depth = options.tracy_callstack orelse 0;
 
-    var stream = std.io.fixedBufferStream(&tracy_message_buffer);
-    stream.writer().print(fmt, args) catch {};
-
-    const written = stream.getWritten();
+    var writer: std.Io.Writer = .fixed(&tracy_message_buffer);
+    writer.print(fmt, args) catch {};
+    const written = writer.buffered();
     c.___tracy_emit_messageC(written.ptr, written.len, color, depth);
 }
 
 pub inline fn printAppInfo(comptime fmt: []const u8, args: anytype) void {
     if (!options.tracy_enable) return;
 
-    var stream = std.io.fixedBufferStream(&tracy_message_buffer);
-    stream.reset();
-    stream.writer().print(fmt, args) catch {};
-
-    const written = stream.getWritten();
+    var writer: std.Io.Writer = .fixed(&tracy_message_buffer);
+    writer.print(fmt, args) catch {};
+    const written = writer.buffered();
     c.___tracy_emit_message_appinfo(written.ptr, written.len);
 }
 
@@ -390,7 +359,7 @@ pub const TracingAllocator = struct {
 };
 
 const TracingMutexImpl = struct {
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     tracy_lock_ctx: c.TracyCLockCtx,
 
     pub const TracingMutexOptions = struct {
@@ -405,7 +374,7 @@ const TracingMutexImpl = struct {
         });
 
         const m: TracingMutexImpl = .{
-            .mutex = .{},
+            .mutex = .init,
             .tracy_lock_ctx = c.___tracy_announce_lockable_ctx(&static.src_loc),
         };
 
@@ -422,7 +391,7 @@ const TracingMutexImpl = struct {
 
     pub fn lock(self: *TracingMutex, comptime src: std.builtin.SourceLocation) void {
         _ = c.___tracy_before_lock_lockable_ctx(self.tracy_lock_ctx);
-        self.mutex.lock();
+        self.mutex.lock(tracy_io) catch unreachable;
         c.___tracy_after_lock_lockable_ctx(self.tracy_lock_ctx);
 
         const static = getSrcLoc(src, .{});
@@ -441,20 +410,20 @@ const TracingMutexImpl = struct {
     }
 
     pub fn unlock(self: *TracingMutex) void {
-        self.mutex.unlock();
+        self.mutex.unlock(tracy_io);
         c.___tracy_after_unlock_lockable_ctx(self.tracy_lock_ctx);
     }
 };
 
 pub const TracingMutex = if (options.tracy_enable) TracingMutexImpl else struct {
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub inline fn init(comptime src: std.builtin.SourceLocation, comptime opts: TracingMutexImpl.TracingMutexOptions) TracingMutex {
         _ = src;
         _ = opts;
 
         return .{
-            .mutex = .{},
+            .mutex = .init,
         };
     }
 
@@ -462,7 +431,7 @@ pub const TracingMutex = if (options.tracy_enable) TracingMutexImpl else struct 
 
     pub inline fn lock(self: *TracingMutex, comptime src: std.builtin.SourceLocation) void {
         _ = src;
-        self.mutex.lock();
+        self.mutex.lock(tracy_io) catch unreachable;
     }
 
     pub inline fn tryLock(self: *TracingMutex, comptime src: std.builtin.SourceLocation) bool {
@@ -471,6 +440,6 @@ pub const TracingMutex = if (options.tracy_enable) TracingMutexImpl else struct 
     }
 
     pub inline fn unlock(self: *TracingMutex) void {
-        self.mutex.unlock();
+        self.mutex.unlock(tracy_io);
     }
 };

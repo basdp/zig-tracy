@@ -2,16 +2,17 @@ const std = @import("std");
 const builtin = @import("builtin");
 const tracy = @import("tracy");
 const windows = std.os.windows;
+const io = std.Options.debug_io;
 
-var finalise_threads: std.Thread.ResetEvent = .{};
+var finalise_threads: std.Io.Event = .unset;
 const worker_count = 6;
 
-fn handleSigInt(_: c_int) callconv(.C) void {
-    finalise_threads.set();
+fn handleSigInt(_: std.posix.SIG) callconv(.c) void {
+    finalise_threads.set(io);
 }
 
 fn handleCtrlEvent(_: windows.DWORD) callconv(windows.WINAPI) windows.BOOL {
-    finalise_threads.set();
+    finalise_threads.set(io);
     return windows.TRUE;
 }
 
@@ -24,7 +25,7 @@ pub fn main() !void {
     } else {
         std.posix.sigaction(std.posix.SIG.INT, &.{
             .handler = .{ .handler = handleSigInt },
-            .mask = std.posix.empty_sigset,
+            .mask = std.posix.sigemptyset(),
             .flags = 0,
         }, null);
     }
@@ -35,7 +36,7 @@ pub fn main() !void {
     var threads: [worker_count]std.Thread = undefined;
     var started: usize = 0;
     errdefer {
-        finalise_threads.set();
+        finalise_threads.set(io);
         for (threads[0..started]) |thread| thread.join();
     }
 
@@ -44,7 +45,7 @@ pub fn main() !void {
         started += 1;
     }
 
-    finalise_threads.wait();
+    finalise_threads.wait(io) catch {};
 
     for (threads[0..started]) |thread| thread.join();
 }
@@ -76,18 +77,18 @@ const SharedState = struct {
         self.counter += 1;
         zone.value(self.counter);
         // Hold the lock briefly to force contention to show up in Tracy.
-        std.time.sleep(50 * std.time.ns_per_ms);
+        std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {};
         return self.counter;
     }
 };
 
-fn worker(finalise: *std.Thread.ResetEvent, shared: *SharedState, idx: usize) void {
+fn worker(finalise: *std.Io.Event, shared: *SharedState, idx: usize) void {
     tracy.setThreadName("Mutex worker");
 
     while (!finalise.isSet()) {
         _ = shared.blockingIncrement();
 
         const pause_ns: u64 = (@as(u64, @intCast(idx)) + 1) * 200 * std.time.ns_per_ms;
-        std.time.sleep(pause_ns);
+        std.Io.sleep(io, .fromNanoseconds(@intCast(pause_ns)), .awake) catch {};
     }
 }

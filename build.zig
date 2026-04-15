@@ -1,6 +1,31 @@
 const std = @import("std");
 const digits2 = std.fmt.digits2;
 
+const TracyConfig = struct {
+    enable: bool,
+    on_demand: bool,
+    callstack: ?u8,
+    no_callstack: bool,
+    no_callstack_inlines: bool,
+    only_localhost: bool,
+    no_broadcast: bool,
+    only_ipv4: bool,
+    no_code_transfer: bool,
+    no_context_switch: bool,
+    no_exit: bool,
+    no_sampling: bool,
+    no_verify: bool,
+    no_vsync_capture: bool,
+    no_frame_image: bool,
+    no_system_tracing: bool,
+    delayed_init: bool,
+    manual_lifetime: bool,
+    fibers: bool,
+    no_crash_handler: bool,
+    timer_fallback: bool,
+    shared: bool,
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -28,6 +53,30 @@ pub fn build(b: *std.Build) void {
     const tracy_no_crash_handler = b.option(bool, "tracy_no_crash_handler", "Disable crash handling") orelse false;
     const tracy_timer_fallback = b.option(bool, "tracy_timer_fallback", "Use lower resolution timers") orelse false;
     const shared = b.option(bool, "shared", "Build the tracy client as a shared libary") orelse false;
+    const tracy_config: TracyConfig = .{
+        .enable = tracy_enable,
+        .on_demand = tracy_on_demand,
+        .callstack = tracy_callstack,
+        .no_callstack = tracy_no_callstack,
+        .no_callstack_inlines = tracy_no_callstack_inlines,
+        .only_localhost = tracy_only_localhost,
+        .no_broadcast = tracy_no_broadcast,
+        .only_ipv4 = tracy_only_ipv4,
+        .no_code_transfer = tracy_no_code_transfer,
+        .no_context_switch = tracy_no_context_switch,
+        .no_exit = tracy_no_exit,
+        .no_sampling = tracy_no_sampling,
+        .no_verify = tracy_no_verify,
+        .no_vsync_capture = tracy_no_vsync_capture,
+        .no_frame_image = tracy_no_frame_image,
+        .no_system_tracing = tracy_no_system_tracing,
+        .delayed_init = tracy_delayed_init,
+        .manual_lifetime = tracy_manual_lifetime,
+        .fibers = tracy_fibers,
+        .no_crash_handler = tracy_no_crash_handler,
+        .timer_fallback = tracy_timer_fallback,
+        .shared = shared,
+    };
 
     const options = b.addOptions();
     options.addOption(bool, "tracy_enable", tracy_enable);
@@ -54,6 +103,13 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "shared", shared);
 
     const tracy_src = b.dependency("tracy_src", .{});
+    const tracy_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/tracy_c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    tracy_c.addIncludePath(tracy_src.path("./public"));
+    addTracyImportMacros(tracy_c, target, tracy_config);
 
     const tracy_module = b.addModule("tracy", .{
         .root_source_file = b.path("src/tracy.zig"),
@@ -62,7 +118,7 @@ pub fn build(b: *std.Build) void {
     });
 
     tracy_module.addImport("tracy-options", options.createModule());
-    tracy_module.addIncludePath(tracy_src.path("./public"));
+    tracy_module.addImport("tracy-c", tracy_c.createModule());
 
     const tracy_client = b.addLibrary(.{
         .linkage = if (shared) .dynamic else .static,
@@ -70,19 +126,17 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .target = target,
             .optimize = optimize,
+            .link_libc = target.result.abi == .msvc,
+            .link_libcpp = target.result.abi != .msvc,
         }),
     });
 
     if (target.result.os.tag == .windows) {
-        tracy_client.linkSystemLibrary("dbghelp");
-        tracy_client.linkSystemLibrary("ws2_32");
+        tracy_client.root_module.linkSystemLibrary("dbghelp", .{});
+        tracy_client.root_module.linkSystemLibrary("ws2_32", .{});
     }
-    if (target.result.abi != .msvc) {
-        tracy_client.linkLibCpp();
-    } else {
-        tracy_client.linkLibC();
-    }
-    tracy_client.addCSourceFile(.{
+    tracy_client.root_module.addIncludePath(tracy_src.path("./public"));
+    tracy_client.root_module.addCSourceFile(.{
         .file = tracy_src.path("./public/TracyClient.cpp"),
         .flags = if (target.result.os.tag == .windows) &.{"-fms-extensions"} else &.{},
     });
@@ -92,53 +146,106 @@ pub fn build(b: *std.Build) void {
             header,
         );
     }
-    if (tracy_enable)
-        tracy_client.root_module.addCMacro("TRACY_ENABLE", "1");
-    if (tracy_on_demand)
-        tracy_client.root_module.addCMacro("TRACY_ON_DEMAND", "1");
-    if (tracy_callstack) |depth| {
-        tracy_client.root_module.addCMacro("TRACY_CALLSTACK", "\"" ++ digits2(depth) ++ "\"");
-    }
-    if (tracy_no_callstack)
-        tracy_client.root_module.addCMacro("TRACY_NO_CALLSTACK", "1");
-    if (tracy_no_callstack_inlines)
-        tracy_client.root_module.addCMacro("TRACY_NO_CALLSTACK_INLINES", "1");
-    if (tracy_only_localhost)
-        tracy_client.root_module.addCMacro("TRACY_ONLY_LOCALHOST", "1");
-    if (tracy_no_broadcast)
-        tracy_client.root_module.addCMacro("TRACY_NO_BROADCAST", "1");
-    if (tracy_only_ipv4)
-        tracy_client.root_module.addCMacro("TRACY_ONLY_IPV4", "1");
-    if (tracy_no_code_transfer)
-        tracy_client.root_module.addCMacro("TRACY_NO_CODE_TRANSFER", "1");
-    if (tracy_no_context_switch)
-        tracy_client.root_module.addCMacro("TRACY_NO_CONTEXT_SWITCH", "1");
-    if (tracy_no_exit)
-        tracy_client.root_module.addCMacro("TRACY_NO_EXIT", "1");
-    if (tracy_no_sampling)
-        tracy_client.root_module.addCMacro("TRACY_NO_SAMPLING", "1");
-    if (tracy_no_verify)
-        tracy_client.root_module.addCMacro("TRACY_NO_VERIFY", "1");
-    if (tracy_no_vsync_capture)
-        tracy_client.root_module.addCMacro("TRACY_NO_VSYNC_CAPTURE", "1");
-    if (tracy_no_frame_image)
-        tracy_client.root_module.addCMacro("TRACY_NO_FRAME_IMAGE", "1");
-    if (tracy_no_system_tracing)
-        tracy_client.root_module.addCMacro("TRACY_NO_SYSTEM_TRACING", "1");
-    if (tracy_delayed_init)
-        tracy_client.root_module.addCMacro("TRACY_DELAYED_INIT", "1");
-    if (tracy_manual_lifetime)
-        tracy_client.root_module.addCMacro("TRACY_MANUAL_LIFETIME", "1");
-    if (tracy_fibers)
-        tracy_client.root_module.addCMacro("TRACY_FIBERS", "1");
-    if (tracy_no_crash_handler)
-        tracy_client.root_module.addCMacro("TRACY_NO_CRASH_HANDLER", "1");
-    if (tracy_timer_fallback)
-        tracy_client.root_module.addCMacro("TRACY_TIMER_FALLBACK", "1");
-    if (shared and target.result.os.tag == .windows)
-        tracy_client.root_module.addCMacro("TRACY_EXPORTS", "1");
+    addTracyClientMacros(tracy_client.root_module, target, tracy_config);
     b.installArtifact(tracy_client);
 }
+
+fn addTracyClientMacros(module: *std.Build.Module, target: std.Build.ResolvedTarget, config: TracyConfig) void {
+    if (config.enable)
+        module.addCMacro("TRACY_ENABLE", "1");
+    if (config.on_demand)
+        module.addCMacro("TRACY_ON_DEMAND", "1");
+    if (config.callstack) |depth| {
+        module.addCMacro("TRACY_CALLSTACK", "\"" ++ digits2(depth) ++ "\"");
+    }
+    if (config.no_callstack)
+        module.addCMacro("TRACY_NO_CALLSTACK", "1");
+    if (config.no_callstack_inlines)
+        module.addCMacro("TRACY_NO_CALLSTACK_INLINES", "1");
+    if (config.only_localhost)
+        module.addCMacro("TRACY_ONLY_LOCALHOST", "1");
+    if (config.no_broadcast)
+        module.addCMacro("TRACY_NO_BROADCAST", "1");
+    if (config.only_ipv4)
+        module.addCMacro("TRACY_ONLY_IPV4", "1");
+    if (config.no_code_transfer)
+        module.addCMacro("TRACY_NO_CODE_TRANSFER", "1");
+    if (config.no_context_switch)
+        module.addCMacro("TRACY_NO_CONTEXT_SWITCH", "1");
+    if (config.no_exit)
+        module.addCMacro("TRACY_NO_EXIT", "1");
+    if (config.no_sampling)
+        module.addCMacro("TRACY_NO_SAMPLING", "1");
+    if (config.no_verify)
+        module.addCMacro("TRACY_NO_VERIFY", "1");
+    if (config.no_vsync_capture)
+        module.addCMacro("TRACY_NO_VSYNC_CAPTURE", "1");
+    if (config.no_frame_image)
+        module.addCMacro("TRACY_NO_FRAME_IMAGE", "1");
+    if (config.no_system_tracing)
+        module.addCMacro("TRACY_NO_SYSTEM_TRACING", "1");
+    if (config.delayed_init)
+        module.addCMacro("TRACY_DELAYED_INIT", "1");
+    if (config.manual_lifetime)
+        module.addCMacro("TRACY_MANUAL_LIFETIME", "1");
+    if (config.fibers)
+        module.addCMacro("TRACY_FIBERS", "1");
+    if (config.no_crash_handler)
+        module.addCMacro("TRACY_NO_CRASH_HANDLER", "1");
+    if (config.timer_fallback)
+        module.addCMacro("TRACY_TIMER_FALLBACK", "1");
+    if (config.shared and target.result.os.tag == .windows)
+        module.addCMacro("TRACY_EXPORTS", "1");
+}
+
+fn addTracyImportMacros(translate_c: *std.Build.Step.TranslateC, target: std.Build.ResolvedTarget, config: TracyConfig) void {
+    if (config.enable)
+        translate_c.defineCMacro("TRACY_ENABLE", null);
+    if (config.on_demand)
+        translate_c.defineCMacro("TRACY_ON_DEMAND", null);
+    if (config.callstack) |depth| {
+        translate_c.defineCMacro("TRACY_CALLSTACK", "\"" ++ digits2(depth) ++ "\"");
+    }
+    if (config.no_callstack)
+        translate_c.defineCMacro("TRACY_NO_CALLSTACK", null);
+    if (config.no_callstack_inlines)
+        translate_c.defineCMacro("TRACY_NO_CALLSTACK_INLINES", null);
+    if (config.only_localhost)
+        translate_c.defineCMacro("TRACY_ONLY_LOCALHOST", null);
+    if (config.no_broadcast)
+        translate_c.defineCMacro("TRACY_NO_BROADCAST", null);
+    if (config.only_ipv4)
+        translate_c.defineCMacro("TRACY_ONLY_IPV4", null);
+    if (config.no_code_transfer)
+        translate_c.defineCMacro("TRACY_NO_CODE_TRANSFER", null);
+    if (config.no_context_switch)
+        translate_c.defineCMacro("TRACY_NO_CONTEXT_SWITCH", null);
+    if (config.no_exit)
+        translate_c.defineCMacro("TRACY_NO_EXIT", null);
+    if (config.no_sampling)
+        translate_c.defineCMacro("TRACY_NO_SAMPLING", null);
+    if (config.no_verify)
+        translate_c.defineCMacro("TRACY_NO_VERIFY", null);
+    if (config.no_vsync_capture)
+        translate_c.defineCMacro("TRACY_NO_VSYNC_CAPTURE", null);
+    if (config.no_frame_image)
+        translate_c.defineCMacro("TRACY_NO_FRAME_IMAGE", null);
+    if (config.no_system_tracing)
+        translate_c.defineCMacro("TRACY_NO_SYSTEM_TRACING", null);
+    if (config.delayed_init)
+        translate_c.defineCMacro("TRACY_DELAYED_INIT", null);
+    if (config.manual_lifetime)
+        translate_c.defineCMacro("TRACY_MANUAL_LIFETIME", null);
+    if (config.fibers)
+        translate_c.defineCMacro("TRACY_FIBERS", null);
+    if (config.no_crash_handler)
+        translate_c.defineCMacro("TRACY_NO_CRASH_HANDLER", null);
+    if (config.timer_fallback)
+        translate_c.defineCMacro("TRACY_TIMER_FALLBACK", null);
+    if (config.shared and target.result.os.tag == .windows)
+        translate_c.defineCMacro("TRACY_IMPORTS", null);
+}
+
 const tracy_header_files = [_][]const u8{
     "tracy/TracyC.h",
     "tracy/Tracy.hpp",
