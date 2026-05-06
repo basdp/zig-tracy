@@ -4,7 +4,7 @@ Easy to use bindings for the tracy client C API.
 ## Dependencies
 
 * Zig 0.16.0
-* Tracy 0.13.0 (only for viewing the profiling session, this repository is only concerned with client matters)
+* Tracy 0.13.1 (only for viewing the profiling session, this repository is only concerned with client matters)
 
 ## Features
 
