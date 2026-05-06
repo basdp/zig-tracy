@@ -23,6 +23,7 @@ const TracyConfig = struct {
     fibers: bool,
     no_crash_handler: bool,
     timer_fallback: bool,
+    rpmalloc_dynamic_tls: bool,
     shared: bool,
 };
 
@@ -52,6 +53,7 @@ pub fn build(b: *std.Build) void {
     const tracy_fibers = b.option(bool, "tracy_fibers", "Enable fibers support") orelse false;
     const tracy_no_crash_handler = b.option(bool, "tracy_no_crash_handler", "Disable crash handling") orelse false;
     const tracy_timer_fallback = b.option(bool, "tracy_timer_fallback", "Use lower resolution timers") orelse false;
+    const tracy_rpmalloc_dynamic_tls = b.option(bool, "tracy_rpmalloc_dynamic_tls", "Avoid rpmalloc initial-exec TLS for dlopen-loaded Linux plugins") orelse false;
     const shared = b.option(bool, "shared", "Build the tracy client as a shared libary") orelse false;
     const tracy_config: TracyConfig = .{
         .enable = tracy_enable,
@@ -75,6 +77,7 @@ pub fn build(b: *std.Build) void {
         .fibers = tracy_fibers,
         .no_crash_handler = tracy_no_crash_handler,
         .timer_fallback = tracy_timer_fallback,
+        .rpmalloc_dynamic_tls = tracy_rpmalloc_dynamic_tls,
         .shared = shared,
     };
 
@@ -100,6 +103,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "tracy_fibers", tracy_fibers);
     options.addOption(bool, "tracy_no_crash_handler", tracy_no_crash_handler);
     options.addOption(bool, "tracy_timer_fallback", tracy_timer_fallback);
+    options.addOption(bool, "tracy_rpmalloc_dynamic_tls", tracy_rpmalloc_dynamic_tls);
     options.addOption(bool, "shared", shared);
 
     const tracy_src = b.dependency("tracy_src", .{});
@@ -194,6 +198,12 @@ fn addTracyClientMacros(module: *std.Build.Module, target: std.Build.ResolvedTar
         module.addCMacro("TRACY_NO_CRASH_HANDLER", "1");
     if (config.timer_fallback)
         module.addCMacro("TRACY_TIMER_FALLBACK", "1");
+    if (config.rpmalloc_dynamic_tls and target.result.os.tag == .linux) {
+        // Tracy's vendored rpmalloc requests initial-exec TLS on Linux. That
+        // breaks late dlopen() of plugin binaries in hosts with limited static
+        // TLS space, so use a Linux-compatible dynamic TLS branch instead.
+        module.addCMacro("__HAIKU__", "1");
+    }
     if (config.shared and target.result.os.tag == .windows)
         module.addCMacro("TRACY_EXPORTS", "1");
 }
